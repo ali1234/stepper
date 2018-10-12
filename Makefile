@@ -1,6 +1,6 @@
 NAME = stepper
 OBJECTS = main.o
-TARGET = atmega168
+TARGET = atmega328
 FREQUENCY = 16000000
 CC = avr-gcc
 AS = avr-as
@@ -9,7 +9,7 @@ LDFLAGS = -mmcu=$(TARGET) -Wl,--undefined=_mmcu,--section-start=.mmcu=0x910000
 ASFLAGS = $(CFLAGS)
 AVRDUDE = avrdude -c stk200 -p m168
 
-all: $(NAME).bin
+all: $(NAME).bin $(NAME).hex
 
 %.bin: %.elf
 	avr-objcopy -j .text -j .data -O binary $< $@
@@ -29,7 +29,6 @@ clean:
 
 simulate: $(NAME).elf
 	simavr -m $(TARGET) -f $(FREQUENCY) $(NAME).elf
-
 
 reset:
 	$(AVRDUDE) -n

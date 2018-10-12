@@ -13,6 +13,8 @@
     along with stepper.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <stdlib.h>
+
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
@@ -53,111 +55,152 @@ const struct avr_mmcu_vcd_trace_t _mytrace[]  _MMCU_ = {
 };
 
 
-// macro to do nothing for 4 cycles
+// Macro to do nothing for 4 cycles
 #define nop() __asm__ __volatile__("nop\nnop\nnop\nnop");
 
-// this assumes 16MHz clock and 8x prescaler
-#define USECS(n) (n*2)
+// This assumes 8x prescaler.
+#define USECS(n) ((int)(n * (F_CPU/8000000.0)))
 
 void hw_setup(void)
 {
     // configure GPIOs
     // TODO
 
-    // configure UART
-    // TODO
+    // configure UART - no interrupts
+    //UBRRL = (F_CPU / (16UL * 115200)) - 1;
+    //UCSRB = _BV(TXEN) | _BV(RXEN);
 
-    // configure timer interrupt
+    // Configure TIMER0 for pulse generator
     TCCR0A = 0x02;          // CTC mode
     TCCR0B = 0x02;          // 8x prescaler
-    OCR0A = USECS(50);      // TOP
+    OCR0A = USECS(50);      // counts between interrupts
     TIMSK0 |= _BV(OCIE0A);  // unmask interrupt
+
+    // Configure TIMER1 for test data generator
+    TCCR1A = 0x00;          // CTC mode
+    TCCR1B = 0x0a;          // CTC mode, 8x prescaler
+    OCR1A = USECS(16666);   // counts between interrupts
+    TIMSK1 |= _BV(OCIE1A);  // unmask interrupt
 }
 
 
-volatile int direction = 0;  // bit field containing direction of each stepper. 1 for press, 0 for release.
-int previous_direction = 0;  // bit field containing the previous directions of each stepper.
-int onoff = 0;               // bit field containing the state of the step pulse lines. 1 for on, 0 for off.
-
-// if you need values bigger that 255, change these to unsigned int.
-// try to avoid that if possible though as 16 bit operations are slower.
-
-unsigned char position[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};             // current position in half steps
-unsigned char max[11] = {55, 50, 45, 40, 35, 30, 25, 20, 20, 20, 20};       // maximum position in half steps (the minimum is zero)
-unsigned char ontime[11] = {10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10};       // amount of time units to keep the step pulse on during motion
-unsigned char offtime[11]  = {20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30};  // amount of time units to keep the step pulse off during motion
-unsigned char waits[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};                // current number of time units that the step pulse has been on or off during motion
-unsigned char ramp[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};                 // number of half steps that the stepper has moved during the current motion
-
+volatile uint16_t set_direction = 0;  // bit field containing direction of each stepper. 1 for press, 0 for release.
 
 ISR(TIMER0_COMPA_vect)
 {
-    PORTD |= 0x80; // raise the high bit of port D so we can measure speed
+    PORTD |= 0x80; // Raise the high bit of port D for timing measurement.
 
-    // work out which steppers changed direction
-    int direction_changed = direction ^ previous_direction;
-    previous_direction = direction;
+    // This interrupt runs every 50us and updates the control signals to the
+    // stepper drivers.
 
-    // in this for loop i is the stepper number and m is (1<<i)
-    // apparently gcc is not smart enough to optimize all the (1<<i)
-    // so the m variable gives it a hint to keep it around
+    // The ontime of the step pulse does not matter according to the datasheet,
+    // as long as it is longer than 1.8us. So make it a single time unit and
+    // then there is no need to count both periods.
 
-    for (int i=0, m=1; i<11; i++, m=m<<1) {             //           <-------------------------------------------+
-        if(waits[i] == 0) {                             //                                                       |
-            if (direction&m) {                          // if the stepper is moving down (to press the button)   |
-                if (position[i] == max[i]) {            //     if the stepper is all the way down already        |
-                    onoff &= ~m;                        //         turn off the step pulse line bit              |
-                    continue;                           //         continue to the next motor   >----------------+
-                } else {                                //     else                                              |
-                    position[i]++;                      //         increment the position                        |
-                }                                       //                                                       |
-            } else {                                    // else                                                  |
-                if (position[i] == 0) {                 //     if the stepper is all the way up already          |
-                    onoff &= ~m;                        //         turn off the step pulse line bit              |
-                    continue;                           //         continue to the next motor   >----------------+
-                } else {                                //     else
-                    position[i]--;                      //         decrement the position
+    // Then the total step time is: (offtime + 1) * interrupt period
+    // So (19 + 1) * 50us = 1ms = 5 rotations per second.
+
+    // static variables remember their value between calls:
+
+    static uint16_t direction = 0;  // direction stepper should move (1=press, 0=release)
+
+    // If you need values bigger that 255, change these to uint16_t.
+    // Try to avoid that if possible though as 16 bit operations are slower.
+
+    static uint8_t position[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};             // current position in steps
+    static uint8_t max[11] = {10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10};       // maximum position in steps (the minimum is zero)
+    static uint8_t offtime[11]  = {19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19};  // amount of time units to keep the step pulse off during motion
+    static uint8_t waits[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};                // current number of time units that the step pulse has been off
+
+    // onoff is not static, and will be recalculated each time:
+
+    uint16_t onoff = 0; // by default clear all pulses
+
+    // Calculate steppers which have changed direction:
+
+    uint16_t dir_delta = (set_direction ^ direction);
+
+    // In this for loop i is the stepper number and m is (1<<i).
+    // Apparently gcc is not smart enough to optimize all the (1<<i)
+    // so the m variable gives it a hint to keep it around.
+
+    for (int i=0, m=1; i<11; i++, m=m<<1) {     //           <---------------------------------------------+
+        if(waits[i] == 0) {                     // if stepper finished a step                              |
+            direction ^= (dir_delta&m);         //     update direction for this stepper (see note below)  |
+            if (direction&m) {                  //     if the stepper is moving down (to press the button) |
+                if (position[i] == max[i]) {    //         if the stepper is all the way down already      |
+                    continue;                   //             continue to the next motor   >--------------+
+                } else {                        //         else                                            |
+                    position[i]++;              //             increment the position                      |
+                }                               //                                                         |
+            } else {                            //     else                                                |
+                if (position[i] == 0) {         //         if the stepper is all the way up already        |
+                    continue;                   //             continue to the next motor   >--------------+
+                } else {                        //         else
+                    position[i]--;              //             decrement the position
                 }
             }
-            onoff ^= m;                                 // toggle the step pulse line bit
-            if (onoff&m) {                              // if the step pulse line is now on
-                waits[i] = ontime[i];                   //     set waits to the on time for this motor
-            } else {                                    // else
-                waits[i] = offtime[i] - (ramp[i]>>4);   //     set waits to the off time for this motor minus the number of half steps already completed divided by 16.
-            }                                           //     speed will therefore increase during the course of motion, up to 15 (255>>4) time units less than the base off time.
-        }
-        waits[i]--;                                     // decrement waits
-        if (direction_changed&m) {                      // if direction changed
-            ramp[i] = 0;                                //     reset ramp step count
-        } else if (ramp[i] < 255) {                     // else if ramp less than maximum ramp
-            ramp[i]++;                                  //     increment ramp step count
+            onoff |= m;                         //     send a pulse to this stepper
+            waits[i] = offtime[i];              //     set the delay counter for this pulse
+        } else {                                // else step is in progress
+            waits[i]--;                         //     decrement waits
         }
     }
 
-    PORTB = direction&0xff;                             // now send the control signals to the GPIOs.
-    PORTC = onoff&0xff;                                 // NOTE: you will have to consider which pin each signal is connected to
-    PORTD = ((direction>>8)&0x7)|((onoff>>5)&0x38);     //       in order to make this optimal.
+    // Note: by updating the direction only when waits == 0 the stepper will
+    // never change direction mid step. This avoids a bug where the position
+    // variable moves opposite to the direction the stepper actually stepped
+    // and ensures that the minimum HOLD time is respected.
+
+    // Send the calculated signals to GPIO pins:
+
+    // Write the directions first:
+    PORTB = direction&0xff;
+    PORTD = (PORTD&(~(0x7)))|((direction>>8)&0x7);
+
+    nop(); nop(); nop(); // Wait 12 cycles = 750ns to respect SETUP time.
+
+    // Now write the pulses:
+    PORTC = onoff&0xff;
+    PORTD = (PORTD&(~(0x38)))|((onoff>>5)&0x38);
+
+    PORTD &= 0x7f; // Lower high bit of port for timing measurement.
 }
 
 
-int main(void)
+volatile uint16_t randomtmp;
+
+ISR(TIMER1_COMPA_vect)
 {
+    // This interrupt runs approximately every 1/60th of a second (ie every 
+    // frame) and changes the direction of the steppers randomly. It has two
+    // test modes and it changes between modes every 128 frames.
+
+    // If TIMER1 interrupt takes too long we can miss TIMER0 interrupts
+    // so use a temporary variable filled from main() instead of calling
+    // rand() in the interrupt. Making random numbers is slow.
+
+    static uint8_t mode = 0;
+    if ((mode++)&0x80) {
+        // Completey randomize the directions of every stepper:
+        set_direction = randomtmp;
+    } else {
+        // Reverse the direction of (at most) one stepper:
+        set_direction ^= 1<<(randomtmp&0xf);
+    }
+}
+
+
+void main(void)
+{
+    // Configure hardware:
     hw_setup();
+
+    // Enable interrupts:
     sei();
 
-    for(;;)
-    {
-        for (int button=0; button<11; button++) {
-            direction ^= (1<<button);
-            for (int i=0; i<120; i++) {
-                nop(); nop(); nop(); nop();
-                nop(); nop(); nop(); nop();
-                nop(); nop(); nop(); nop();
-                nop(); nop(); nop(); nop();
-            }
-        }
+    // Generate random numbers forever:
+    for(;;) {
+        randomtmp = rand();
     }
-
-    // Never reached.
-    return(0);
 }
