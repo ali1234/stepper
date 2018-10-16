@@ -64,7 +64,10 @@ const struct avr_mmcu_vcd_trace_t _mytrace[]  _MMCU_ = {
 void hw_setup(void)
 {
     // configure GPIOs
-    // TODO
+    // For a first test, just set PB0 and PC0 as outputs.
+    // These are digital pin 8 and analog input 0 on arduino.
+    DDRB = 0b00000001;
+    DDRC = 0b00000001;
 
     // configure UART - no interrupts
     //UBRRL = (F_CPU / (16UL * 115200)) - 1;
