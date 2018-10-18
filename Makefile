@@ -4,10 +4,10 @@ TARGET = atmega328
 FREQUENCY = 16000000
 CC = avr-gcc
 AS = avr-as
-CFLAGS = -g -O3 -mmcu=$(TARGET) -DF_CPU=$(FREQUENCY)UL
+CFLAGS = -g -O3 -mmcu=$(TARGET) -DF_CPU=$(FREQUENCY)UL -DNOTARDUINO
 LDFLAGS = -mmcu=$(TARGET) -Wl,--undefined=_mmcu,--section-start=.mmcu=0x910000
 ASFLAGS = $(CFLAGS)
-AVRDUDE = avrdude -c stk200 -p m168
+AVRDUDE = avrdude -p m328p -P /dev/ttyACM1 -c arduino -b 115200 -F -u
 
 all: $(NAME).bin $(NAME).hex
 

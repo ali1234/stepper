@@ -18,6 +18,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
+#ifdef NOTARDUINO
 #include "avr_mcu_section.h"
 
 
@@ -53,6 +54,7 @@ const struct avr_mmcu_vcd_trace_t _mytrace[]  _MMCU_ = {
     { AVR_MCU_VCD_SYMBOL("D7"), .mask = (1 << 7), .what = (void*)&PORTD, },
 
 };
+#endif /* NOTARDUINO */
 
 
 // Macro to do nothing for 4 cycles
@@ -111,8 +113,8 @@ ISR(TIMER0_COMPA_vect)
     // Try to avoid that if possible though as 16 bit operations are slower.
 
     static uint8_t position[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};             // current position in steps
-    static uint8_t max[11] = {10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10};       // maximum position in steps (the minimum is zero)
-    static uint8_t offtime[11]  = {19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19};  // amount of time units to keep the step pulse off during motion
+    static uint8_t max[11] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5};       // maximum position in steps (the minimum is zero)
+    static uint8_t offtime[11]  = {49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49};  // amount of time units to keep the step pulse off during motion
     static uint8_t waits[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};                // current number of time units that the step pulse has been off
 
     // onoff is not static, and will be recalculated each time:
@@ -194,7 +196,11 @@ ISR(TIMER1_COMPA_vect)
 }
 
 
+#ifdef NOTARDUINO
 void main(void)
+#else
+void setup(void)
+#endif /* NOTARDUINO */
 {
     // Configure hardware:
     hw_setup();
@@ -206,4 +212,9 @@ void main(void)
     for(;;) {
         randomtmp = rand();
     }
+}
+
+
+void loop() {
+    // not used
 }
