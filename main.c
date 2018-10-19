@@ -102,6 +102,7 @@ void hw_setup(void)
 volatile uint16_t set_direction = 0;  // bit field containing direction of each stepper. 1 for press, 0 for release.
 volatile uint16_t tmp_direction = 0;  // bit field containing next direction of each stepper.
 volatile uint8_t ready = 0;
+volatile uint8_t underrun = 0;
 
 ISR(TIMER0_COMPA_vect)
 {
@@ -194,6 +195,10 @@ ISR(TIMER1_COMPA_vect)
         set_direction = tmp_direction;
         UDR0 = 'D';      // Request next data from host.
         ready = 0;
+        underrun = 0;
+    } else if(underrun == 0) {
+        UDR0 = 'U';
+        underrun = 1;
     }
 }
 
