@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+
+import serial
+import binascii
+import logging
+import struct
+import time
+import random
+
+from tqdm import tqdm
+
+class Handler(logging.Handler):
+    def emit(self, record):
+        tqdm.write(self.format(record))
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+root_logger.handlers = [Handler()]
+logger = logging.getLogger(__name__)
+
+
+
+class Serial(object):
+
+    def __init__(self, port='/dev/ttyUSB0', baud_rate=115200):
+        self._port = port
+        self._baud_rate = baud_rate
+        self._file = None
+        self._arduino_alive = None
+        self._ping_sent = False
+
+    def __enter__(self):
+        self._file = serial.Serial(
+            self._port, self._baud_rate,
+            bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE, timeout=0.1
+        )
+        logger.info('Using {:s} at {:d} baud for comms.'.format(self._port, self._baud_rate))
+        return self
+
+    def __exit__(self, *args):
+        self._file.close()
+
+
+    def poll(self):
+        response = self._file.read(1)
+        if response:
+            if self._arduino_alive is not True:
+                logger.warning('Arduino is connected.')
+                self._arduino_alive = True
+            self._ping_sent = False
+
+            if response == b'D':
+                # Arduino has sent a report to the switch and its endpoint is ready for more data
+                return True
+
+            elif response == b'U':
+                logger.error('Arduino reported buffer underrun.')
+                return True
+
+            elif response == b'P':
+                # Arduino replied to a ping
+                return False
+
+            else:
+                logger.error('Unexpected character from Arduino. ' + response)
+                return False
+
+        else:
+            # Serial time out.
+            if self._arduino_alive is not False and self._ping_sent:
+                logger.warning('Arduino is not responding.')
+                self._arduino_alive = False
+            self._file.write(b'P')
+            self._ping_sent = True
+            return False
+
+    def write(self, data):
+        self._file.write(data +  b'\n')
+
+
+def main():
+    directions = 0
+    with Serial(port='/dev/ttyACM1', baud_rate=19200) as hal:
+        with tqdm(unit=' updates', dynamic_ncols=True) as pbar:
+            while True:
+                hal.write(b'\n0000')   # reset
+                if hal.poll():
+                    data = binascii.hexlify(struct.pack('<H', directions))
+                    hal.write(data)
+                    pbar.set_description('Sent {:s}'.format(data.decode('ascii')))
+                    directions = random.randrange(0, 0x10000)
+                    pbar.update()
+
+
+if __name__ == '__main__':
+    main()

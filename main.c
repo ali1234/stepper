@@ -18,12 +18,15 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
+#define BAUD 19200  // NOTE: because serial is not interrupt buffered we
+                    // can't send data any faster than this, else bytes will
+                    // get lost. 19200 bps is still enough for 480 fps.
+
+#include <util/setbaud.h>
+
+
 #ifdef NOTARDUINO
 #include "avr_mcu_section.h"
-
-
-// trace struct for simavr
-
 const struct avr_mmcu_vcd_trace_t _mytrace[]  _MMCU_ = {
 
     { AVR_MCU_VCD_SYMBOL("B0"), .mask = (1 << 0), .what = (void*)&PORTB, },
@@ -71,9 +74,16 @@ void hw_setup(void)
     DDRB = 0b00000001;
     DDRC = 0b00000001;
 
-    // configure UART - no interrupts
-    //UBRRL = (F_CPU / (16UL * 115200)) - 1;
-    //UCSRB = _BV(TXEN) | _BV(RXEN);
+    // configure UART
+    UBRR0H = UBRRH_VALUE;
+    UBRR0L = UBRRL_VALUE;
+#if USE_2X
+    UCSR0A |= _BV(U2X0);
+#else
+    UCSR0A &= ~(_BV(U2X0));
+#endif
+    UCSR0C = _BV(UCSZ01) | _BV(UCSZ00);
+    UCSR0B = _BV(RXEN0) | _BV(TXEN0);
 
     // Configure TIMER0 for pulse generator
     TCCR0A = 0x02;          // CTC mode
@@ -90,6 +100,8 @@ void hw_setup(void)
 
 
 volatile uint16_t set_direction = 0;  // bit field containing direction of each stepper. 1 for press, 0 for release.
+volatile uint16_t tmp_direction = 0;  // bit field containing next direction of each stepper.
+volatile uint8_t ready = 0;
 
 ISR(TIMER0_COMPA_vect)
 {
@@ -113,7 +125,7 @@ ISR(TIMER0_COMPA_vect)
     // Try to avoid that if possible though as 16 bit operations are slower.
 
     static uint8_t position[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};             // current position in steps
-    static uint8_t max[11] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5};       // maximum position in steps (the minimum is zero)
+    static uint8_t max[11] = {6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6};                  // maximum position in steps (the minimum is zero)
     static uint8_t offtime[11]  = {49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49};  // amount of time units to keep the step pulse off during motion
     static uint8_t waits[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};                // current number of time units that the step pulse has been off
 
@@ -173,25 +185,15 @@ ISR(TIMER0_COMPA_vect)
 }
 
 
-volatile uint16_t randomtmp;
-
 ISR(TIMER1_COMPA_vect)
 {
-    // This interrupt runs approximately every 1/60th of a second (ie every 
-    // frame) and changes the direction of the steppers randomly. It has two
-    // test modes and it changes between modes every 128 frames.
+    // This interrupt runs approximately every 1/60th of a second and copies
+    // the directions received from serial into the active directions.
 
-    // If TIMER1 interrupt takes too long we can miss TIMER0 interrupts
-    // so use a temporary variable filled from main() instead of calling
-    // rand() in the interrupt. Making random numbers is slow.
-
-    static uint8_t mode = 0;
-    if ((mode++)&0x80) {
-        // Completey randomize the directions of every stepper:
-        set_direction = randomtmp;
-    } else {
-        // Reverse the direction of (at most) one stepper:
-        set_direction ^= 1<<(randomtmp&0xf);
+    if(ready) {
+        set_direction = tmp_direction;
+        UDR0 = 'D';      // Request next data from host.
+        ready = 0;
     }
 }
 
@@ -208,9 +210,40 @@ void setup(void)
     // Enable interrupts:
     sei();
 
-    // Generate random numbers forever:
+    // Serial comms:
+    uint8_t l = 0;
+    uint8_t b[2];
+    uint8_t val;
     for(;;) {
-        randomtmp = rand();
+        loop_until_bit_is_set(UCSR0A, RXC0);
+        uint8_t c = UDR0;
+
+        if (c == '\r' || c == '\n') {
+            if (l==4) {
+                tmp_direction = b[0] | (b[1]<<8);  // Little endian.
+                ready = 1;
+                while (ready) ;
+            }
+            l = 0; b[0] = 0; b[1] = 0;
+        } else {
+            if(c >= '0' && c <= '9') {
+                val = c - '0';
+            } else if (c >= 'a' && c <= 'f') {
+                val = (c - 'a') + 0xa;
+            } else if (c >= 'A' && c <= 'F') {
+                val = (c - 'A') + 0xa;
+            } else {
+                if (c == 'P') {
+                    UDR0 = 'P';  // Ping request.
+                }
+                continue;  // Ignore this character.
+            }
+            if (l >= 4) {
+                continue;  // We got enough data already.
+            }
+            b[l/2] |= val << (4*((l+1)%2)); // hex 2 bin
+            l += 1;
+        }
     }
 }
 
